@@ -1,14 +1,250 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// Prisma schema for multi-tenant SaaS with Tavus video avatar conversations
+// Database: PostgreSQL | ORM: Prisma
 
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// ========================================
+// TENANT & IDENTITY MODELS
+// ========================================
+
+// Organization: tenant/cliente no modelo multi-tenant
+// Cada organização é um cliente do SaaS
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relações
+  memberships   Membership[]
+  subscription  Subscription?
+  conversations Conversation[]
+  usageDaily    UsageDaily[]
+
+  @@index([slug])
+  @@map("organizations")
+}
+
+// User: identidade global no sistema
+// Um usuário pode pertencer a múltiplas organizações
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  name          String
+  passwordHash  String?
+  avatarUrl     String?
+  emailVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relações
+  memberships Membership[]
+  messages    Message[]
+
+  @@index([email])
+  @@map("users")
+}
+
+// Membership: relacionamento User ↔ Organization com role
+// Permite que um usuário pertença a múltiplas orgs com diferentes papéis
+model Membership {
+  id             String   @id @default(uuid())
+  userId         String
+  organizationId String
+  role           String // "owner", "admin", "member", "viewer"
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relações
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([userId])
+  @@index([organizationId])
+  @@index([role])
+  @@map("memberships")
+}
+
+// ========================================
+// BILLING & SUBSCRIPTION MODELS
+// ========================================
+
+// Plan: planos disponíveis do SaaS
+// Define limites e capacidades de cada tier
+model Plan {
+  id                         String   @id @default(uuid())
+  name                       String   @unique // "starter", "pro", "enterprise"
+  displayName                String
+  description                String?
+  price                      Int // em centavos
+  currency                   String   @default("USD")
+  billingInterval            String // "monthly", "yearly"
+  maxConversationsPerDay     Int      @default(10)
+  maxMinutesPerMonth         Int      @default(100)
+  maxConcurrentConversations Int      @default(1)
+  features                   String[] // Lista de features como JSON array
+  isActive                   Boolean  @default(true)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  // Relações
+  subscriptions Subscription[]
+
+  @@index([name])
+  @@index([isActive])
+  @@map("plans")
+}
+
+// Subscription: assinatura de uma organização
+// 1:1 com Organization, controla acesso e limites
+model Subscription {
+  id                   String    @id @default(uuid())
+  organizationId       String    @unique
+  planId               String
+  status               String // "active", "canceled", "past_due", "trialing"
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean   @default(false)
+  trialStart           DateTime?
+  trialEnd             DateTime?
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  // Relações
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+
+  @@index([organizationId])
+  @@index([planId])
+  @@index([status])
+  @@index([stripeSubscriptionId])
+  @@map("subscriptions")
+}
+
+// UsageDaily: controle diário de uso para billing e limites
+// Agregação diária por organização para facilitar queries
+model UsageDaily {
+  id                   String   @id @default(uuid())
+  organizationId       String
+  date                 DateTime @db.Date
+  conversationsStarted Int      @default(0)
+  minutesUsed          Int      @default(0) // minutos de conversa
+  messagesCount        Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // Relações
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, date])
+  @@index([organizationId])
+  @@index([date])
+  @@map("usage_daily")
+}
+
+// ========================================
+// CONVERSATION MODELS
+// ========================================
+
+// Conversation: sessão de conversa com avatar Tavus
+// Representa uma interação completa user ↔ avatar
+model Conversation {
+  id              String    @id @default(uuid())
+  organizationId  String
+  tavusReplicaId  String? // ID do replica/avatar no Tavus
+  tavusSessionId  String? // ID da sessão no Tavus
+  status          String // "pending", "active", "completed", "failed", "canceled"
+  startedAt       DateTime?
+  endedAt         DateTime?
+  durationSeconds Int? // duração em segundos
+  metadata        Json? // dados adicionais como JSON
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relações
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  messages     Message[]
+  events       ConversationEvent[]
+  consent      ConversationConsent?
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([tavusSessionId])
+  @@index([startedAt])
+  @@map("conversations")
+}
+
+// Message: mensagens/transcrições da conversa
+// Armazena tanto mensagens do usuário quanto respostas do assistant
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String
+  userId         String? // null se for mensagem do assistant
+  role           String // "user", "assistant", "system"
+  content        String   @db.Text
+  transcription  String?  @db.Text // transcrição de áudio se aplicável
+  timestamp      DateTime @default(now())
+  metadata       Json?
+
+  // Relações
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId])
+  @@index([userId])
+  @@index([role])
+  @@index([timestamp])
+  @@map("messages")
+}
+
+// ConversationEvent: telemetria e eventos do CVI (Conversational Video Interface)
+// Captura eventos técnicos, erros, percepção, latência, etc
+model ConversationEvent {
+  id             String   @id @default(uuid())
+  conversationId String
+  eventType      String // "connection", "error", "latency", "perception", "quality", "interrupt"
+  severity       String // "info", "warning", "error", "critical"
+  message        String?  @db.Text
+  data           Json? // payload completo do evento
+  timestamp      DateTime @default(now())
+
+  // Relações
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([eventType])
+  @@index([severity])
+  @@index([timestamp])
+  @@map("conversation_events")
+}
+
+// ConversationConsent: consentimento de mic/câmera
+// Registro de consentimento do usuário para uso de dispositivos
+model ConversationConsent {
+  id                String    @id @default(uuid())
+  conversationId    String    @unique
+  microphoneConsent Boolean   @default(false)
+  cameraConsent     Boolean   @default(false)
+  recordingConsent  Boolean   @default(false)
+  ipAddress         String?
+  userAgent         String?   @db.Text
+  grantedAt         DateTime  @default(now())
+  revokedAt         DateTime?
+
+  // Relações
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([grantedAt])
+  @@map("conversation_consents")
 }
