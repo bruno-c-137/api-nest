@@ -9,13 +9,16 @@ export class UsersService {
   async create(data: { email: string; name: string; password?: string }) {
     const existing = await this.prisma.user.findUnique({ where: { email: data.email } });
     if (existing) throw new ConflictException('Email já está em uso');
-
-    const { password, ...userData } = data;
-    const passwordHash = password ? await bcrypt.hash(password, 10) : null;
+    
+    const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : null;
     
     return this.prisma.user.create({
-      data: { ...userData, passwordHash },
-      select: { id: true, email: true, name: true, avatarUrl: true, createdAt: true },
+      data: {
+        email: data.email,
+        name: data.name,
+        passwordHash,
+      },
+      select: { id: true, email: true, name: true, createdAt: true },
     });
   }
 
@@ -25,7 +28,7 @@ export class UsersService {
       this.prisma.user.findMany({
         skip,
         take: limit,
-        select: { id: true, email: true, name: true, avatarUrl: true, createdAt: true },
+        select: { id: true, email: true, name: true, createdAt: true },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.user.count(),
@@ -40,21 +43,19 @@ export class UsersService {
         id: true,
         email: true,
         name: true,
-        avatarUrl: true,
-        emailVerified: true,
         createdAt: true,
-        memberships: { include: { organization: true } },
+        _count: { select: { conversations: true, messages: true } },
       },
     });
     if (!user) throw new NotFoundException('Usuário não encontrado');
     return user;
   }
 
-  async update(id: string, data: { name?: string; avatarUrl?: string }) {
+  async update(id: string, data: { name?: string }) {
     return this.prisma.user.update({
       where: { id },
       data,
-      select: { id: true, email: true, name: true, avatarUrl: true },
+      select: { id: true, email: true, name: true },
     });
   }
 
@@ -62,10 +63,9 @@ export class UsersService {
     return this.prisma.user.delete({ where: { id } });
   }
 
-  async getOrganizations(id: string) {
-    return this.prisma.membership.findMany({
+  async getConversations(id: string) {
+    return this.prisma.conversation.findMany({
       where: { userId: id },
-      include: { organization: true },
       orderBy: { createdAt: 'desc' },
     });
   }

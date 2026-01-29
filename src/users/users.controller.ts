@@ -21,7 +21,7 @@ export class UsersController {
   }
 
   @Put(':id')
-  async update(@Param('id') id: string, @Body() data: { name?: string; avatarUrl?: string }) {
+  async update(@Param('id') id: string, @Body() data: { name?: string }) {
     return this.usersService.update(id, data);
   }
 
@@ -30,8 +30,8 @@ export class UsersController {
     return this.usersService.remove(id);
   }
 
-  @Get(':id/organizations')
-  async getOrganizations(@Param('id') id: string) {
-    return this.usersService.getOrganizations(id);
+  @Get(':id/conversations')
+  async getConversations(@Param('id') id: string) {
+    return this.usersService.getConversations(id);
   }
 }

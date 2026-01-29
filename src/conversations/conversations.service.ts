@@ -5,30 +5,29 @@ import { PrismaService } from '../prisma/prisma.service';
 export class ConversationsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(data: { organizationId: string; tavusReplicaId?: string; metadata?: any }) {
+  async create(data: { userId: string; language: string; tavusReplicaId?: string }) {
     return this.prisma.conversation.create({
       data: {
         ...data,
         status: 'pending',
-        metadata: data.metadata || undefined,
       },
     });
   }
 
   async findAll({
-    organizationId,
+    userId,
     status,
     page,
     limit,
   }: {
-    organizationId?: string;
+    userId?: string;
     status?: string;
     page: number;
     limit: number;
   }) {
     const skip = (page - 1) * limit;
     const where: any = {};
-    if (organizationId) where.organizationId = organizationId;
+    if (userId) where.userId = userId;
     if (status) where.status = status;
 
     const [items, total] = await Promise.all([
@@ -37,8 +36,8 @@ export class ConversationsService {
         skip,
         take: limit,
         include: {
-          organization: { select: { id: true, name: true, slug: true } },
-          _count: { select: { messages: true, events: true } },
+          user: { select: { id: true, name: true, email: true } },
+          _count: { select: { messages: true } },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -51,9 +50,8 @@ export class ConversationsService {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id },
       include: {
-        organization: true,
-        consent: true,
-        _count: { select: { messages: true, events: true } },
+        user: { select: { id: true, name: true, email: true } },
+        _count: { select: { messages: true } },
       },
     });
     if (!conversation) throw new NotFoundException('Conversa não encontrada');
@@ -97,16 +95,7 @@ export class ConversationsService {
     return this.prisma.message.findMany({
       where: { conversationId: id },
       include: { user: { select: { id: true, name: true, email: true } } },
-      orderBy: { timestamp: 'asc' },
-    });
-  }
-
-  async getEvents(id: string, eventType?: string) {
-    const where: any = { conversationId: id };
-    if (eventType) where.eventType = eventType;
-    return this.prisma.conversationEvent.findMany({
-      where,
-      orderBy: { timestamp: 'desc' },
+      orderBy: { createdAt: 'asc' },
     });
   }
 }

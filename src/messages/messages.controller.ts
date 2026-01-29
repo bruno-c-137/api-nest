@@ -14,7 +14,6 @@ export class MessagesController {
       role: string;
       content: string;
       transcription?: string;
-      metadata?: any;
     },
   ) {
     return this.messagesService.create(data);

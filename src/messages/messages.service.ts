@@ -11,13 +11,9 @@ export class MessagesService {
     role: string;
     content: string;
     transcription?: string;
-    metadata?: any;
   }) {
     return this.prisma.message.create({
-      data: {
-        ...data,
-        metadata: data.metadata || undefined,
-      },
+      data,
       include: { user: { select: { id: true, name: true, email: true } } },
     });
   }
@@ -26,7 +22,7 @@ export class MessagesService {
     return this.prisma.message.findMany({
       where: { conversationId },
       include: { user: { select: { id: true, name: true, email: true } } },
-      orderBy: { timestamp: 'asc' },
+      orderBy: { createdAt: 'asc' },
     });
   }
 
@@ -35,7 +31,7 @@ export class MessagesService {
       where: { id },
       include: {
         user: { select: { id: true, name: true, email: true } },
-        conversation: { select: { id: true, organizationId: true } },
+        conversation: { select: { id: true, userId: true } },
       },
     });
     if (!message) throw new NotFoundException('Mensagem não encontrada');
