@@ -6,11 +6,11 @@ import * as bcrypt from 'bcrypt';
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(data: { email: string; name: string; password?: string }) {
+  async create(data: { email: string; name: string; password?: string; passwordHash?: string }) {
     const existing = await this.prisma.user.findUnique({ where: { email: data.email } });
     if (existing) throw new ConflictException('Email já está em uso');
     
-    const passwordHash = data.password ? await bcrypt.hash(data.password, 10) : null;
+    const passwordHash = data.passwordHash || (data.password ? await bcrypt.hash(data.password, 10) : null);
     
     return this.prisma.user.create({
       data: {
@@ -19,6 +19,12 @@ export class UsersService {
         passwordHash,
       },
       select: { id: true, email: true, name: true, createdAt: true },
+    });
+  }
+
+  async findByEmail(email: string) {
+    return this.prisma.user.findUnique({
+      where: { email },
     });
   }
 

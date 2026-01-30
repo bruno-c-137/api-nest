@@ -24,6 +24,7 @@ export class ConversationsService {
    * @returns conversationId e conversationUrl
    */
   async startConversation(params: {
+    userId: string;
     language: string;
     personaId?: string;
     replicaId?: string;
@@ -59,11 +60,10 @@ export class ConversationsService {
       throw new BadRequestException('Tavus não retornou conversation_url');
     }
 
-    // Salvar no banco de dados
-    // Para MVP, usar userId fixo "demo-user-id"
+    // Salvar no banco de dados com o userId autenticado
     const conversation = await this.prisma.conversation.create({
       data: {
-        userId: 'demo-user-id',
+        userId: params.userId,
         language: params.language,
         status: 'active',
         conversationUrl,

@@ -6,10 +6,12 @@ import { UsersModule } from './users/users.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { MessagesModule } from './messages/messages.module';
 import { TavusModule } from './tavus/tavus.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
     PrismaModule,
+    AuthModule,
     UsersModule,
     ConversationsModule,
     MessagesModule,
