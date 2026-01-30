@@ -7,6 +7,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { MessagesModule } from './messages/messages.module';
 import { TavusModule } from './tavus/tavus.module';
 import { AuthModule } from './auth/auth.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { AuthModule } from './auth/auth.module';
     ConversationsModule,
     MessagesModule,
     TavusModule,
+    WebhooksModule,
   ],
   controllers: [AppController],
   providers: [AppService],

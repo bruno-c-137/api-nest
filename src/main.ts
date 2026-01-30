@@ -12,6 +12,8 @@ async function bootstrap() {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
+      // Permitir campos extras para webhooks
+      skipMissingProperties: false,
     }),
   );
   

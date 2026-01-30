@@ -7,7 +7,7 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tavusService: TavusService,
-  ) {}
+  ) { }
 
   async create(data: { userId: string; language: string; tavusReplicaId?: string }) {
     return this.prisma.conversation.create({
@@ -48,12 +48,17 @@ export class ConversationsService {
       );
     }
 
+    // Construir callback URL
+    const webhookBaseUrl = process.env.WEBHOOK_BASE_URL || 'http://localhost:3000';
+    const callbackUrl = `${webhookBaseUrl}/webhooks/tavus`;
+
     // Chamar Tavus API para criar conversa
     const { conversationUrl, tavusConversationId } =
       await this.tavusService.createConversation({
         personaId,
         replicaId,
         language: params.language,
+        callbackUrl,
       });
 
     if (!conversationUrl) {
@@ -152,6 +157,99 @@ export class ConversationsService {
     });
   }
 
+  async saveTranscript(
+    conversationId: string,
+    messages: Array<{
+      role: 'user' | 'assistant';
+      content: string;
+      externalEventId?: string;
+      createdAt?: string;
+    }>,
+  ) {
+    // Verificar se a conversa existe
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversa não encontrada');
+    }
+
+    // Buscar externalEventIds existentes para deduplicação
+    const existingEventIds = messages
+      .map((m) => m.externalEventId)
+      .filter((id): id is string => !!id);
+
+    const existingMessages = await this.prisma.message.findMany({
+      where: {
+        conversationId,
+        externalEventId: { in: existingEventIds },
+      },
+      select: { externalEventId: true },
+    });
+
+    const existingEventIdsSet = new Set(
+      existingMessages.map((m) => m.externalEventId).filter((id): id is string => !!id),
+    );
+
+    // Filtrar mensagens não duplicadas
+    const messagesToSave = messages.filter((msg) => {
+      if (msg.externalEventId && existingEventIdsSet.has(msg.externalEventId)) {
+        return false; // Skip duplicado
+      }
+      return true;
+    });
+
+    // Salvar mensagens em transação
+    const savedMessages = await this.prisma.$transaction(
+      messagesToSave.map((msg) =>
+        this.prisma.message.create({
+          data: {
+            conversationId,
+            userId: conversation.userId,
+            role: msg.role,
+            content: msg.content,
+            externalEventId: msg.externalEventId,
+            createdAt: msg.createdAt ? new Date(msg.createdAt) : new Date(),
+          },
+        }),
+      ),
+    );
+
+    return {
+      savedCount: savedMessages.length,
+      skippedCount: messages.length - messagesToSave.length,
+    };
+  }
+
+  async endConversation(conversationId: string, endedAt?: string) {
+    // Verificar se a conversa existe
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversa não encontrada');
+    }
+
+    // Atualizar status e endedAt
+    const updatedConversation = await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        status: 'ended',
+        endedAt: endedAt ? new Date(endedAt) : new Date(),
+      },
+    });
+
+    // Retornar conversa atualizada com aviso sobre webhook
+    return {
+      ...updatedConversation,
+      webhookStatus: updatedConversation.transcriptReceived 
+        ? 'Transcrição já foi recebida via webhook' 
+        : 'Aguardando webhook da Tavus com a transcrição (2-5 minutos)',
+    };
+  }
+
   async remove(id: string) {
     return this.prisma.conversation.delete({ where: { id } });
   }
@@ -162,5 +260,98 @@ export class ConversationsService {
       include: { user: { select: { id: true, name: true, email: true } } },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  async importTranscriptFromTavus(conversationId: string) {
+    // Verificar se a conversa existe
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversa não encontrada');
+    }
+
+    if (!conversation.tavusConversationId) {
+      throw new BadRequestException('Conversa não tem tavusConversationId associado');
+    }
+
+    // Buscar transcrição da Tavus
+    const transcript = await this.tavusService.getConversationTranscript(
+      conversation.tavusConversationId,
+    );
+
+    // Converter formato Tavus para formato interno
+    // Nota: O formato exato depende da resposta da API Tavus
+    // Ajuste conforme necessário baseado na documentação
+    const messages = this.parseTavusTranscript(transcript);
+
+    // Salvar mensagens
+    return this.saveTranscript(conversationId, messages);
+  }
+
+  async debugTavusConversation(conversationId: string) {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversa não encontrada');
+    }
+
+    if (!conversation.tavusConversationId) {
+      throw new BadRequestException('Conversa não tem tavusConversationId');
+    }
+
+    try {
+      // Buscar dados da conversa
+      const conversationData = await this.tavusService.getConversation(
+        conversation.tavusConversationId,
+      );
+
+      // Tentar buscar transcrição
+      let transcriptData = null;
+      let transcriptError: string | null = null;
+      try {
+        transcriptData = await this.tavusService.getConversationTranscript(
+          conversation.tavusConversationId,
+        );
+      } catch (error) {
+        transcriptError = error instanceof Error ? error.message : String(error);
+      }
+
+      return {
+        tavusConversationId: conversation.tavusConversationId,
+        conversationData,
+        transcriptData,
+        transcriptError,
+      };
+    } catch (error) {
+      throw new BadRequestException({
+        message: 'Erro ao buscar dados da Tavus',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private parseTavusTranscript(transcript: any): Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    externalEventId?: string;
+    createdAt?: string;
+  }> {
+    // Adapte conforme o formato real da resposta da Tavus
+    // Exemplo genérico:
+    if (Array.isArray(transcript?.messages)) {
+      return transcript.messages.map((msg: any) => ({
+        role: msg.speaker === 'user' ? 'user' : 'assistant',
+        content: msg.text || msg.content || '',
+        externalEventId: msg.id || msg.event_id,
+        createdAt: msg.timestamp || msg.created_at,
+      }));
+    }
+
+    // Se for outro formato, ajuste aqui
+    return [];
   }
 }
