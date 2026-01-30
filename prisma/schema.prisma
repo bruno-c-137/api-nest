@@ -22,17 +22,19 @@ model User {
 }
 
 model Conversation {
-  id              String    @id @default(uuid())
-  userId          String
-  tavusReplicaId  String?
-  tavusSessionId  String?
-  language        String
-  status          String
-  startedAt       DateTime?
-  endedAt         DateTime?
-  durationSeconds Int?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                  String    @id @default(uuid())
+  userId              String
+  tavusReplicaId      String?
+  tavusSessionId      String?
+  tavusConversationId String?
+  conversationUrl     String?
+  language            String
+  status              String
+  startedAt           DateTime?
+  endedAt             DateTime?
+  durationSeconds     Int?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages Message[]

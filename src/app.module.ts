@@ -5,6 +5,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { MessagesModule } from './messages/messages.module';
+import { TavusModule } from './tavus/tavus.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { MessagesModule } from './messages/messages.module';
     UsersModule,
     ConversationsModule,
     MessagesModule,
+    TavusModule,
   ],
   controllers: [AppController],
   providers: [AppService],

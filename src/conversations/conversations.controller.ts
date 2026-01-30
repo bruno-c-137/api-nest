@@ -1,9 +1,23 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/common';
 import { ConversationsService } from './conversations.service';
+import { StartConversationDto } from './dto/start-conversation.dto';
 
 @Controller('conversations')
 export class ConversationsController {
   constructor(private readonly conversationsService: ConversationsService) {}
+
+  /**
+   * Inicia uma nova conversa com avatar Tavus
+   * POST /conversations/start
+   */
+  @Post('start')
+  async startConversation(@Body() dto: StartConversationDto) {
+    return this.conversationsService.startConversation({
+      language: dto.language,
+      personaId: dto.personaId,
+      replicaId: dto.replicaId,
+    });
+  }
 
   @Post()
   async create(@Body() data: { userId: string; language: string; tavusReplicaId?: string }) {

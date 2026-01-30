@@ -1,9 +1,13 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { TavusService } from '../tavus/tavus.service';
 
 @Injectable()
 export class ConversationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tavusService: TavusService,
+  ) {}
 
   async create(data: { userId: string; language: string; tavusReplicaId?: string }) {
     return this.prisma.conversation.create({
@@ -12,6 +16,67 @@ export class ConversationsService {
         status: 'pending',
       },
     });
+  }
+
+  /**
+   * Inicia uma nova conversa na Tavus e salva no banco de dados
+   * @param params - Parâmetros da conversa (language obrigatório, personaId e replicaId opcionais)
+   * @returns conversationId e conversationUrl
+   */
+  async startConversation(params: {
+    language: string;
+    personaId?: string;
+    replicaId?: string;
+  }) {
+    // Validar variáveis de ambiente
+    const defaultPersonaId = process.env.TAVUS_PERSONA_ID;
+    const defaultReplicaId = process.env.TAVUS_REPLICA_ID;
+
+    const personaId = params.personaId || defaultPersonaId;
+    const replicaId = params.replicaId || defaultReplicaId;
+
+    if (!personaId) {
+      throw new BadRequestException(
+        'personaId não fornecido e TAVUS_PERSONA_ID não está definido no ambiente',
+      );
+    }
+
+    if (!replicaId) {
+      throw new BadRequestException(
+        'replicaId não fornecido e TAVUS_REPLICA_ID não está definido no ambiente',
+      );
+    }
+
+    // Chamar Tavus API para criar conversa
+    const { conversationUrl, tavusConversationId } =
+      await this.tavusService.createConversation({
+        personaId,
+        replicaId,
+        language: params.language,
+      });
+
+    if (!conversationUrl) {
+      throw new BadRequestException('Tavus não retornou conversation_url');
+    }
+
+    // Salvar no banco de dados
+    // Para MVP, usar userId fixo "demo-user-id"
+    const conversation = await this.prisma.conversation.create({
+      data: {
+        userId: 'demo-user-id',
+        language: params.language,
+        status: 'active',
+        conversationUrl,
+        tavusConversationId,
+        tavusReplicaId: replicaId,
+        startedAt: new Date(),
+      },
+    });
+
+    return {
+      conversationId: conversation.id,
+      conversationUrl: conversation.conversationUrl,
+    };
   }
 
   async findAll({
