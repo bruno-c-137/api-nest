@@ -48,9 +48,21 @@ export class ConversationsService {
       );
     }
 
-    // Construir callback URL
+    // Validar se webhook está configurado
     const webhookBaseUrl = process.env.WEBHOOK_BASE_URL || 'http://localhost:3000';
+    const isLocalhost = webhookBaseUrl.includes('localhost') || webhookBaseUrl.includes('127.0.0.1');
+    
+    if (isLocalhost) {
+      console.warn('⚠️  WEBHOOK_BASE_URL não está configurado ou está usando localhost!');
+      console.warn('⚠️  A Tavus não conseguirá enviar webhooks. Configure uma URL pública (ngrok/serveo).');
+    } else {
+      console.log(`✅ Webhook configurado: ${webhookBaseUrl}/webhooks/tavus`);
+    }
+
+    // Construir callback URL
     const callbackUrl = `${webhookBaseUrl}/webhooks/tavus`;
+    
+    console.log(`📡 Callback URL configurado: ${callbackUrl}`);
 
     // Chamar Tavus API para criar conversa
     const { conversationUrl, tavusConversationId } =
@@ -254,12 +266,32 @@ export class ConversationsService {
     return this.prisma.conversation.delete({ where: { id } });
   }
 
-  async getMessages(id: string) {
-    return this.prisma.message.findMany({
-      where: { conversationId: id },
-      include: { user: { select: { id: true, name: true, email: true } } },
-      orderBy: { createdAt: 'asc' },
-    });
+  async getMessages(id: string, options?: { page?: number; limit?: number }) {
+    const page = options?.page || 1;
+    const limit = options?.limit || 50;
+    const skip = (page - 1) * limit;
+
+    const [messages, total] = await Promise.all([
+      this.prisma.message.findMany({
+        where: { conversationId: id },
+        include: { user: { select: { id: true, name: true, email: true } } },
+        orderBy: { createdAt: 'asc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.message.count({
+        where: { conversationId: id },
+      }),
+    ]);
+
+    return {
+      items: messages,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      hasMore: page * limit < total,
+    };
   }
 
   async importTranscriptFromTavus(conversationId: string) {

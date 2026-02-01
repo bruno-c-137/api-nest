@@ -9,7 +9,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 @Controller('conversations')
 @UseGuards(JwtAuthGuard)
 export class ConversationsController {
-  constructor(private readonly conversationsService: ConversationsService) {}
+  constructor(private readonly conversationsService: ConversationsService) { }
 
   /**
    * Inicia uma nova conversa com avatar Tavus
@@ -65,8 +65,16 @@ export class ConversationsController {
   }
 
   @Get(':id/messages')
-  async getMessages(@Param('id') id: string) {
-    return this.conversationsService.getMessages(id);
+  @UseGuards(JwtAuthGuard)
+  async getMessages(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.conversationsService.getMessages(id, {
+      page: page ? parseInt(page) : 1,
+      limit: limit ? parseInt(limit) : 50,
+    });
   }
 
   /**
@@ -113,19 +121,48 @@ export class ConversationsController {
   @UseGuards(JwtAuthGuard)
   async getWebhookStatus(@Param('id') id: string, @CurrentUser() userId: string) {
     const conversation = await this.conversationsService.findOne(id);
-    
+
     const messages = await this.conversationsService.getMessages(id);
-    
+
+    // Calcular tempo desde que a conversa terminou
+    let waitingTime: number | null = null;
+    if (conversation.status === 'ended' && conversation.endedAt && !conversation.transcriptReceived) {
+      const minutesWaiting = Math.floor((Date.now() - new Date(conversation.endedAt).getTime()) / 1000 / 60);
+      waitingTime = minutesWaiting;
+    }
+
+    // Verificar configuração do webhook
+    const webhookBaseUrl = process.env.WEBHOOK_BASE_URL;
+    const webhookConfigured = webhookBaseUrl && webhookBaseUrl !== 'http://localhost:3000';
+
     return {
       conversationId: conversation.id,
       status: conversation.status,
       transcriptReceived: conversation.transcriptReceived,
-      messagesCount: messages.length,
-      message: conversation.transcriptReceived 
-        ? '✅ Webhook recebido! Transcrição disponível.' 
+      messagesCount: messages.items.length,
+      waitingTimeMinutes: waitingTime,
+      webhookConfigured: webhookConfigured,
+      webhookUrl: webhookConfigured ? `${webhookBaseUrl}/webhooks/tavus` : null,
+      message: conversation.transcriptReceived
+        ? '✅ Webhook recebido! Transcrição disponível.'
         : conversation.status === 'ended'
-          ? '⏳ Aguardando webhook da Tavus (pode demorar 2-5 minutos)'
+          ? waitingTime && waitingTime > 10
+            ? '⚠️ Webhook não recebido há mais de 10 minutos. Possível problema de configuração.'
+            : `⏳ Aguardando webhook da Tavus (${waitingTime || 0} minutos)`
           : 'ℹ️ Conversa ainda está ativa',
+      troubleshooting: !webhookConfigured && conversation.status === 'ended' && !conversation.transcriptReceived
+        ? {
+          problem: 'WEBHOOK_BASE_URL não configurado ou usando localhost',
+          solution: 'Configure uma URL pública (ngrok/serveo) no .env',
+          steps: [
+            '1. Rode: ssh -R 80:localhost:3000 serveo.net',
+            '2. Copie a URL gerada',
+            '3. Atualize WEBHOOK_BASE_URL no .env',
+            '4. Reinicie a API',
+            '5. Crie uma nova conversa'
+          ]
+        }
+        : null
     };
   }
 }
