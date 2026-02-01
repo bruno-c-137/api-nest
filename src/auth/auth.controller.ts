@@ -5,13 +5,15 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { UsersService } from '../users/users.service';
+import { RedisService } from '../redis/redis.service';
 
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
-  ) { }
+    private readonly redis: RedisService,
+  ) {}
 
   @Post('register')
   async register(@Body() dto: RegisterDto) {
@@ -32,6 +34,14 @@ export class AuthController {
   async getProfile(@CurrentUser() user: any) {
     // Extrair userId do objeto user
     const userId = user.userId || user.sub || user.id;
+
+    const cacheKey = `user:profile:${userId}`;
+
+    // Tentar buscar do cache (5 minutos)
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
 
     // Buscar dados do usuário
     const userData = await this.usersService.findOne(userId);
@@ -56,7 +66,7 @@ export class AuthController {
       });
 
       const parts = formatter.formatToParts(new Date(date));
-      const getValue = (type: string) => parts.find(p => p.type === type)?.value || '';
+      const getValue = (type: string) => parts.find((p) => p.type === type)?.value || '';
 
       // Montar string ISO manualmente no formato de Brasília
       const year = getValue('year');
@@ -72,17 +82,17 @@ export class AuthController {
     };
 
     // Retornar perfil com IDs das conversas
-    return {
+    const result = {
       id: userData.id,
       email: userData.email,
       name: userData.name,
       createdAt: toBrasiliaTime(userData.createdAt),
       stats: {
         totalConversations: conversations.length,
-        activeConversations: conversations.filter(c => c.status === 'active').length,
-        endedConversations: conversations.filter(c => c.status === 'ended').length,
+        activeConversations: conversations.filter((c) => c.status === 'active').length,
+        endedConversations: conversations.filter((c) => c.status === 'ended').length,
       },
-      conversations: conversations.map(c => ({
+      conversations: conversations.map((c) => ({
         id: c.id,
         tavusConversationId: c.tavusConversationId,
         status: c.status,
@@ -93,5 +103,10 @@ export class AuthController {
         createdAt: toBrasiliaTime(c.createdAt),
       })),
     };
+
+    // Cachear por 5 minutos (300 segundos)
+    await this.redis.set(cacheKey, result, 300);
+
+    return result;
   }
 }

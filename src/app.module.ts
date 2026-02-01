@@ -8,9 +8,13 @@ import { MessagesModule } from './messages/messages.module';
 import { TavusModule } from './tavus/tavus.module';
 import { AuthModule } from './auth/auth.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { RedisModule } from './redis/redis.module';
+
+console.log('🚀 Carregando AppModule...');
 
 @Module({
   imports: [
+    RedisModule,
     PrismaModule,
     AuthModule,
     UsersModule,

@@ -122,7 +122,7 @@ export class ConversationsController {
   async getWebhookStatus(@Param('id') id: string, @CurrentUser() userId: string) {
     const conversation = await this.conversationsService.findOne(id);
 
-    const messages = await this.conversationsService.getMessages(id);
+    const messagesResult = await this.conversationsService.getMessages(id, { page: 1, limit: 1 });
 
     // Calcular tempo desde que a conversa terminou
     let waitingTime: number | null = null;
@@ -139,7 +139,7 @@ export class ConversationsController {
       conversationId: conversation.id,
       status: conversation.status,
       transcriptReceived: conversation.transcriptReceived,
-      messagesCount: messages.items.length,
+      messagesCount: messagesResult.total,
       waitingTimeMinutes: waitingTime,
       webhookConfigured: webhookConfigured,
       webhookUrl: webhookConfigured ? `${webhookBaseUrl}/webhooks/tavus` : null,

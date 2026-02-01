@@ -1,13 +1,15 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TavusService } from '../tavus/tavus.service';
+import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tavusService: TavusService,
-  ) { }
+    private readonly redis: RedisService,
+  ) {}
 
   async create(data: { userId: string; language: string; tavusReplicaId?: string }) {
     return this.prisma.conversation.create({
@@ -129,6 +131,15 @@ export class ConversationsService {
   }
 
   async findOne(id: string) {
+    const cacheKey = `conversation:${id}`;
+    
+    // Tentar buscar do cache
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    // Buscar do banco
     const conversation = await this.prisma.conversation.findUnique({
       where: { id },
       include: {
@@ -136,7 +147,12 @@ export class ConversationsService {
         _count: { select: { messages: true } },
       },
     });
+
     if (!conversation) throw new NotFoundException('Conversa não encontrada');
+
+    // Salvar no cache (5 minutos = 300 segundos)
+    await this.redis.set(cacheKey, conversation, 300);
+    
     return conversation;
   }
 
@@ -159,7 +175,7 @@ export class ConversationsService {
       ? Math.floor((Date.now() - conversation.startedAt.getTime()) / 1000)
       : null;
 
-    return this.prisma.conversation.update({
+    const updated = await this.prisma.conversation.update({
       where: { id },
       data: {
         status: 'completed',
@@ -167,6 +183,11 @@ export class ConversationsService {
         durationSeconds,
       },
     });
+    
+    // Invalidar cache após atualização
+    await this.redis.del(`conversation:${id}`);
+    
+    return updated;
   }
 
   async saveTranscript(
@@ -227,6 +248,14 @@ export class ConversationsService {
         }),
       ),
     );
+    
+    // Invalidar cache de mensagens após salvar
+    const cachePattern = `messages:${conversationId}:*`;
+    console.log(`🗑️  Invalidando cache: ${cachePattern}`);
+    // Como cache-manager não tem deletePattern, invalidamos as páginas mais comuns
+    for (let page = 1; page <= 10; page++) {
+      await this.redis.del(`messages:${conversationId}:${page}:50`);
+    }
 
     return {
       savedCount: savedMessages.length,
@@ -252,6 +281,9 @@ export class ConversationsService {
         endedAt: endedAt ? new Date(endedAt) : new Date(),
       },
     });
+    
+    // Invalidar cache
+    await this.redis.del(`conversation:${conversationId}`);
 
     // Retornar conversa atualizada com aviso sobre webhook
     return {
@@ -263,6 +295,8 @@ export class ConversationsService {
   }
 
   async remove(id: string) {
+    // Invalidar cache ao deletar
+    await this.redis.del(`conversation:${id}`);
     return this.prisma.conversation.delete({ where: { id } });
   }
 
@@ -270,6 +304,14 @@ export class ConversationsService {
     const page = options?.page || 1;
     const limit = options?.limit || 50;
     const skip = (page - 1) * limit;
+    
+    const cacheKey = `messages:${id}:${page}:${limit}`;
+    
+    // Tentar buscar do cache
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
 
     const [messages, total] = await Promise.all([
       this.prisma.message.findMany({
@@ -284,7 +326,7 @@ export class ConversationsService {
       }),
     ]);
 
-    return {
+    const result = {
       items: messages,
       total,
       page,
@@ -292,6 +334,11 @@ export class ConversationsService {
       totalPages: Math.ceil(total / limit),
       hasMore: page * limit < total,
     };
+    
+    // Cachear por 2 minutos (120 segundos)
+    await this.redis.set(cacheKey, result, 120);
+    
+    return result;
   }
 
   async importTranscriptFromTavus(conversationId: string) {
