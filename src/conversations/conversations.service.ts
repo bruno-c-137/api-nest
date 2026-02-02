@@ -199,6 +199,9 @@ export class ConversationsService {
       createdAt?: string;
     }>,
   ) {
+    console.log(`💾 Iniciando salvamento de ${messages.length} mensagens para conversa ${conversationId}`);
+    const startTime = Date.now();
+
     // Verificar se a conversa existe
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
@@ -208,58 +211,38 @@ export class ConversationsService {
       throw new NotFoundException('Conversa não encontrada');
     }
 
-    // Buscar externalEventIds existentes para deduplicação
-    const existingEventIds = messages
-      .map((m) => m.externalEventId)
-      .filter((id): id is string => !!id);
+    // Preparar dados para bulk insert
+    const messagesToSave = messages.map((msg) => ({
+      conversationId,
+      userId: conversation.userId,
+      role: msg.role,
+      content: msg.content,
+      externalEventId: msg.externalEventId || null,
+      createdAt: msg.createdAt ? new Date(msg.createdAt) : new Date(),
+    }));
 
-    const existingMessages = await this.prisma.message.findMany({
-      where: {
-        conversationId,
-        externalEventId: { in: existingEventIds },
-      },
-      select: { externalEventId: true },
+    // 🚀 OTIMIZAÇÃO: Bulk insert com skipDuplicates
+    // Em vez de 100 INSERTs sequenciais, faz 1 único INSERT
+    const result = await this.prisma.message.createMany({
+      data: messagesToSave,
+      skipDuplicates: true, // Ignora duplicados automaticamente
     });
 
-    const existingEventIdsSet = new Set(
-      existingMessages.map((m) => m.externalEventId).filter((id): id is string => !!id),
-    );
+    const savedCount = result.count;
+    const skippedCount = messages.length - savedCount;
 
-    // Filtrar mensagens não duplicadas
-    const messagesToSave = messages.filter((msg) => {
-      if (msg.externalEventId && existingEventIdsSet.has(msg.externalEventId)) {
-        return false; // Skip duplicado
-      }
-      return true;
-    });
-
-    // Salvar mensagens em transação
-    const savedMessages = await this.prisma.$transaction(
-      messagesToSave.map((msg) =>
-        this.prisma.message.create({
-          data: {
-            conversationId,
-            userId: conversation.userId,
-            role: msg.role,
-            content: msg.content,
-            externalEventId: msg.externalEventId,
-            createdAt: msg.createdAt ? new Date(msg.createdAt) : new Date(),
-          },
-        }),
-      ),
-    );
-    
-    // Invalidar cache de mensagens após salvar
-    const cachePattern = `messages:${conversationId}:*`;
-    console.log(`🗑️  Invalidando cache: ${cachePattern}`);
-    // Como cache-manager não tem deletePattern, invalidamos as páginas mais comuns
-    for (let page = 1; page <= 10; page++) {
-      await this.redis.del(`messages:${conversationId}:${page}:50`);
+    console.log(`✅ Salvo ${savedCount} mensagens em ${Date.now() - startTime}ms`);
+    if (skippedCount > 0) {
+      console.log(`⏭️  Pulado ${skippedCount} mensagens duplicadas`);
     }
 
+    // 🚀 OTIMIZAÇÃO: Invalidar cache usando pattern (mais rápido)
+    await this.redis.delPattern(`messages:${conversationId}:*`);
+    console.log(`🗑️  Cache invalidado para conversa ${conversationId}`);
+
     return {
-      savedCount: savedMessages.length,
-      skippedCount: messages.length - messagesToSave.length,
+      savedCount,
+      skippedCount,
     };
   }
 

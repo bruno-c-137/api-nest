@@ -9,18 +9,17 @@ export class WebhooksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly conversationsService: ConversationsService,
-  ) {}
+  ) { }
 
   async processTavusWebhook(data: any) {
-    this.logger.log(`Processando webhook tipo: ${data.event_type || data.type}`);
-    this.logger.debug('Dados do webhook:', JSON.stringify(data, null, 2));
+    this.logger.log(`📥 Webhook recebido: ${data.event_type || data.type}`);
 
-    // Buscar conversa pelo tavusConversationId
+    // Validação rápida e busca de conversa
     const tavusConversationId = data.conversation_id || data.conversation?.conversation_id;
 
     if (!tavusConversationId) {
-      this.logger.warn('Webhook sem conversation_id, ignorando');
-      return;
+      this.logger.warn('⚠️  Webhook sem conversation_id, ignorando');
+      return { status: 'ignored', reason: 'missing_conversation_id' };
     }
 
     const conversation = await this.prisma.conversation.findFirst({
@@ -28,49 +27,75 @@ export class WebhooksService {
     });
 
     if (!conversation) {
-      this.logger.warn(`Conversa não encontrada para tavusConversationId: ${tavusConversationId}`);
-      return;
+      this.logger.warn(`⚠️  Conversa não encontrada: ${tavusConversationId}`);
+      return { status: 'ignored', reason: 'conversation_not_found' };
     }
 
-    // Processar baseado no tipo de evento (Tavus usa "type" não "event_type")
     const eventType = data.type || data.event_type;
+    this.logger.log(`✅ Processando evento "${eventType}" para conversa ${conversation.id}`);
 
-    switch (eventType) {
-      case 'system.replica_joined':
-        this.logger.log(`Réplica entrou na conversa ${conversation.id}`);
-        break;
+    // 🚀 OTIMIZAÇÃO: Processar em background (não bloquear webhook)
+    // Responder 200 OK imediatamente para a Tavus
+    setImmediate(() => {
+      this.processWebhookAsync(conversation.id, eventType, data).catch((error) => {
+        this.logger.error(`❌ Erro no processamento assíncrono:`, error);
+      });
+    });
 
-      case 'system.shutdown':
-        await this.handleConversationEnded(conversation.id, data);
-        break;
+    return {
+      status: 'processing',
+      conversationId: conversation.id,
+      eventType
+    };
+  }
 
-      case 'application.transcription_ready':
-        await this.handleTranscriptAvailable(conversation.id, data);
-        break;
+  /**
+   * Processa o webhook em background (não bloqueia a resposta HTTP)
+   */
+  private async processWebhookAsync(conversationId: string, eventType: string, data: any) {
+    try {
+      switch (eventType) {
+        case 'system.replica_joined':
+          this.logger.log(`🤖 Réplica entrou na conversa ${conversationId}`);
+          break;
 
-      case 'application.recording_ready':
-        this.logger.log(`Gravação disponível para conversa ${conversation.id}`);
-        // TODO: Implementar download/salvamento de gravação se necessário
-        break;
+        case 'system.shutdown':
+          await this.handleConversationEnded(conversationId, data);
+          break;
 
-      // Compatibilidade com nomes alternativos
-      case 'conversation.ended':
-      case 'conversation_ended':
-        await this.handleConversationEnded(conversation.id, data);
-        break;
+        case 'application.transcription_ready':
+          await this.handleTranscriptAvailable(conversationId, data);
+          break;
 
-      case 'transcript.available':
-      case 'transcript_available':
-        await this.handleTranscriptAvailable(conversation.id, data);
-        break;
+        case 'application.recording_ready':
+          this.logger.log(`🎥 Gravação disponível para conversa ${conversationId}`);
+          // TODO: Implementar download/salvamento de gravação se necessário
+          break;
 
-      default:
-        this.logger.log(`Tipo de evento não tratado: ${eventType}`);
+        // Compatibilidade com nomes alternativos
+        case 'conversation.ended':
+        case 'conversation_ended':
+          await this.handleConversationEnded(conversationId, data);
+          break;
+
+        case 'transcript.available':
+        case 'transcript_available':
+          await this.handleTranscriptAvailable(conversationId, data);
+          break;
+
+        default:
+          this.logger.log(`ℹ️  Tipo de evento não tratado: ${eventType}`);
+      }
+
+      this.logger.log(`✅ Evento "${eventType}" processado com sucesso para conversa ${conversationId}`);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao processar evento "${eventType}":`, error);
+      throw error;
     }
   }
 
   private async handleConversationEnded(conversationId: string, data: any) {
-    this.logger.log(`Encerrando conversa ${conversationId}`);
+    this.logger.log(`🔚 Encerrando conversa ${conversationId}`);
 
     // Atualizar status se ainda não estiver ended
     const conversation = await this.prisma.conversation.findUnique({
@@ -85,39 +110,46 @@ export class WebhooksService {
           endedAt: new Date(),
         },
       });
+      this.logger.log(`✅ Status atualizado para "ended"`);
     }
 
     // Se vier transcrição junto, processar
-    if (data.transcript || data.messages) {
+    if (data.transcript || data.messages || data.properties?.transcript) {
+      this.logger.log(`📝 Transcrição detectada no evento de encerramento`);
       await this.handleTranscriptAvailable(conversationId, data);
     }
   }
 
   private async handleTranscriptAvailable(conversationId: string, data: any) {
-    this.logger.log(`Salvando transcrição para conversa ${conversationId}`);
+    this.logger.log(`💾 Processando transcrição para conversa ${conversationId}`);
+    const startTime = Date.now();
 
     // Extrair mensagens do webhook
     const messages = this.extractMessages(data);
 
     if (messages.length === 0) {
-      this.logger.warn('Nenhuma mensagem encontrada no webhook');
+      this.logger.warn('⚠️  Nenhuma mensagem encontrada no webhook');
       return;
     }
 
-    // Salvar mensagens
+    this.logger.log(`📨 ${messages.length} mensagens encontradas`);
+
+    // Salvar mensagens (agora otimizado com bulk insert)
     try {
       const result = await this.conversationsService.saveTranscript(conversationId, messages);
-      this.logger.log(`Transcrição salva: ${result.savedCount} mensagens, ${result.skippedCount} puladas`);
-      
+
+      const elapsed = Date.now() - startTime;
+      this.logger.log(`✅ Transcrição salva em ${elapsed}ms: ${result.savedCount} novas, ${result.skippedCount} duplicadas`);
+
       // Marcar que a transcrição foi recebida via webhook
       await this.prisma.conversation.update({
         where: { id: conversationId },
         data: { transcriptReceived: true },
       });
-      
-      this.logger.log(`Marcado transcriptReceived=true para conversa ${conversationId}`);
+
+      this.logger.log(`✅ Marcado transcriptReceived=true para conversa ${conversationId}`);
     } catch (error) {
-      this.logger.error('Erro ao salvar transcrição:', error);
+      this.logger.error(`❌ Erro ao salvar transcrição:`, error);
       throw error;
     }
   }
@@ -160,11 +192,11 @@ export class WebhooksService {
 
   private determineRole(msg: any): 'user' | 'assistant' {
     const role = msg.role || msg.speaker || msg.type;
-    
+
     if (role === 'user' || role === 'customer' || role === 'human') {
       return 'user';
     }
-    
+
     return 'assistant';
   }
 }
